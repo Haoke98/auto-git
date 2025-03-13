@@ -42,17 +42,31 @@ def check_git_repo():
 def run_git_command(command, check=True):
     """运行git命令并返回输出"""
     try:
+        # 设置环境变量，确保Git使用UTF-8输出
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["LC_ALL"] = "en_US.UTF-8"
+        env["LANG"] = "en_US.UTF-8"
+        
         result = subprocess.run(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             check=check,
-            text=True
+            text=True,
+            encoding='utf-8',  # 明确指定编码为UTF-8
+            errors='replace',  # 处理无法解码的字符
+            env=env
         )
-        return result.stdout.strip()
+        return result.stdout.strip() if result.stdout else ""
     except subprocess.CalledProcessError as e:
         if check:
             print_color(f"错误: 执行Git命令失败: {e}", Colors.RED)
+            sys.exit(1)
+        return ""
+    except Exception as e:
+        print_color(f"执行命令时发生异常: {e}", Colors.RED)
+        if check:
             sys.exit(1)
         return ""
 
@@ -110,11 +124,22 @@ def process_submodules():
         
         print_color(f"检测到submodule变化: {submodule_path} ({old_hash}..{new_hash})", Colors.YELLOW)
         
+        # 检查子模块目录是否存在
+        if not os.path.isdir(submodule_path):
+            print_color(f"警告: 子模块目录 {submodule_path} 不存在，跳过", Colors.YELLOW)
+            continue
+            
         # 进入submodule目录
         current_dir = os.getcwd()
         try:
             os.chdir(submodule_path)
             
+            # 检查子模块是否是git仓库
+            if not os.path.isdir(".git") and not os.path.isfile(".git"):
+                print_color(f"警告: {submodule_path} 不是git仓库，跳过", Colors.YELLOW)
+                os.chdir(current_dir)
+                continue
+                
             # 获取submodule提交信息
             sub_commits = run_git_command(
                 ["git", "log", f"--pretty=format:%h %s", f"{old_hash}..{new_hash}"],
@@ -153,20 +178,31 @@ def generate_commit_message(changes, repo_info, submodule_info, model="mistral-n
     
     # 调用ollama
     try:
+        # 设置环境变量
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        
         result = subprocess.run(
             ["ollama", "run", model],
             input=prompt,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding='utf-8',
+            errors='replace',
+            env=env,
             check=True
         )
-        ollama_response = result.stdout.strip()
-    except subprocess.CalledProcessError:
+        ollama_response = result.stdout.strip() if result.stdout else "LLM没有返回任何输出"
+    except subprocess.CalledProcessError as e:
+        print_color(f"LLM调用失败: {e}", Colors.RED)
         ollama_response = "LLM调用失败"
     except FileNotFoundError:
         print_color("错误: 未找到ollama命令", Colors.RED)
         ollama_response = "LLM调用失败：未找到ollama命令"
+    except Exception as e:
+        print_color(f"调用LLM时发生异常: {e}", Colors.RED)
+        ollama_response = f"LLM调用异常: {str(e)}"
     
     # 打印生成的commit message
     print_color("生成的提交信息:", Colors.GREEN)
