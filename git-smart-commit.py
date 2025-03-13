@@ -200,6 +200,7 @@ def main():
     parser.add_argument("-g", "--generate", action="store_true", help="生成提交信息")
     parser.add_argument("-c", "--commit", action="store_true", help="生成并直接提交")
     parser.add_argument("-m", "--model", default="mistral-nemo", help="指定LLM模型 (默认: mistral-nemo)")
+    parser.add_argument("-a", "--all", action="store_true", help="包含所有更改，即使未暂存")
     
     args = parser.parse_args()
     
@@ -216,11 +217,43 @@ def main():
     if not check_git_repo():
         return
     
-    # 检查是否有暂存的更改
+    # 检查是否有变更
     staged_changes = run_git_command(["git", "diff", "--staged"], check=False)
+    unstaged_changes = run_git_command(["git", "diff"], check=False)
+    submodule_changes = run_git_command(["git", "status"], check=False)
+    
+    # 如果使用-a参数并且有未暂存的更改，则先将所有更改暂存
+    if args.all and (unstaged_changes or "modified:" in submodule_changes):
+        print_color("自动暂存所有更改...", Colors.BLUE)
+        run_git_command(["git", "add", "-A"])
+        staged_changes = run_git_command(["git", "diff", "--staged"], check=False)
+    
+    # 如果没有任何暂存的更改，提示用户
     if not staged_changes:
-        print_color("错误: 没有暂存的更改。请使用 'git add' 添加更改。", Colors.RED)
-        return
+        # 检查是否有未暂存的子模块更改
+        if "modified:" in submodule_changes and "orm_hub" in submodule_changes:
+            print_color("检测到子模块更改但尚未暂存。", Colors.YELLOW)
+            print_color("提示: 请使用 'git add <子模块路径>' 添加子模块更改。", Colors.YELLOW)
+            print_color("例如: git add orm_hub", Colors.YELLOW)
+        # 检查是否有未暂存的普通更改
+        elif unstaged_changes:
+            print_color("检测到更改但尚未暂存。", Colors.YELLOW)
+            print_color("提示: 请使用 'git add <文件路径>' 添加更改。", Colors.YELLOW)
+        else:
+            print_color("错误: 没有检测到任何更改。", Colors.RED)
+        
+        # 询问用户是否要自动暂存所有更改
+        if (unstaged_changes or "modified:" in submodule_changes) and not args.all:
+            print_color("是否自动暂存所有更改并继续? (y/n)", Colors.YELLOW)
+            confirm = input().lower()
+            if confirm in ['y', 'yes']:
+                run_git_command(["git", "add", "-A"])
+                staged_changes = run_git_command(["git", "diff", "--staged"], check=False)
+                print_color("已暂存所有更改", Colors.GREEN)
+            else:
+                return
+        else:
+            return
     
     # 获取仓库信息
     repo_info = get_repo_info()
