@@ -2,7 +2,7 @@
 
 一个基于LLM能够根据现有的代码变动自动汇总出commit message的git工具
 
-## 初心&开发原始需求
+## 初心&原始需求
 
 脚本的功能如下：
 
@@ -13,3 +13,6 @@
    对应的仓库从old_hash（git 提交唯一标志）到 new_hash之间的每一次提交中的commit message，并进行一个汇总再把这个汇总应用到主仓库的当前commit
    message的生成中
 4. 我的最终目的是做一个可以跨多个平台的工具
+
+## 预览
+![img.png](assets/img.png)
