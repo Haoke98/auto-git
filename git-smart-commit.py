@@ -73,9 +73,9 @@ def debug_log(message, data=None, level="INFO"):
                 f.write(str(data) + "\n")
         f.write("\n")
 
-def print_color(text, color):
+def print_color(text, color, **kwargs):
     """使用颜色输出文本"""
-    print(f"{color}{text}{Colors.NC}")
+    print(f"{color}{text}{Colors.NC}", **kwargs)
 
 def check_git_repo():
     """检查当前目录是否为git仓库"""
@@ -358,71 +358,83 @@ def generate_commit_message(changes, repo_info, submodule_info, model="mistral-n
 def parse_multiple_commits(response, num_options, language):
     """解析LLM返回的多个commit message"""
     debug_log("开始解析多个提交信息选项")
+    debug_log("原始响应内容:", response)
     
-    # 根据语言设置选项标记
+    # 首先尝试检测是否已经有清晰的选项标记
     if language.lower() == "chinese" or language.lower() == "中文":
-        option_markers = [f"选项{i}:" for i in range(1, num_options + 1)]
-        # 备用标记
-        backup_markers = [f"选项 {i}:" for i in range(1, num_options + 1)]
+        option_patterns = [
+            r"选项\s*(\d+)\s*[:：]",
+            r"选项\s*(\d+)\s*[：:]",
+            r"方案\s*(\d+)\s*[:：]"
+        ]
     else:
-        option_markers = [f"Option {i}:" for i in range(1, num_options + 1)]
-        # 备用标记
-        backup_markers = [f"OPTION {i}:" for i in range(1, num_options + 1)]
+        option_patterns = [
+            r"Option\s*(\d+)\s*:",
+            r"OPTION\s*(\d+)\s*:",
+            r"Alternative\s*(\d+)\s*:"
+        ]
     
-    # 尝试查找所有选项
-    commit_options = []
+    # 尝试查找所有选项的起始位置
+    option_positions = []
     
-    # 首先尝试使用主要标记
-    for i in range(num_options):
-        if i < len(option_markers) - 1:
-            # 寻找两个标记之间的内容
-            start_marker = option_markers[i]
-            end_marker = option_markers[i + 1]
-            start_pos = response.find(start_marker)
-            if start_pos != -1:
-                start_pos += len(start_marker)
-                end_pos = response.find(end_marker, start_pos)
-                if end_pos != -1:
-                    commit_options.append(response[start_pos:end_pos].strip())
-        else:
-            # 最后一个选项到结尾
-            start_marker = option_markers[i]
-            start_pos = response.find(start_marker)
-            if start_pos != -1:
-                start_pos += len(start_marker)
-                commit_options.append(response[start_pos:].strip())
+    for pattern in option_patterns:
+        matches = list(re.finditer(pattern, response))
+        if matches:
+            for match in matches:
+                option_num = int(match.group(1))
+                if 1 <= option_num <= num_options:
+                    option_positions.append((option_num, match.start(), match.end()))
+            
+            # 如果找到了选项，跳出循环
+            if option_positions:
+                break
     
-    # 如果未找到足够的选项，尝试使用备用标记
-    if len(commit_options) < num_options:
-        debug_log("使用主要标记未找到足够的选项，尝试备用标记")
+    # 根据找到的位置分割响应
+    if option_positions:
+        debug_log(f"找到 {len(option_positions)} 个选项标记")
+        # 按位置排序
+        option_positions.sort(key=lambda x: x[1])
+        
         commit_options = []
-        for i in range(num_options):
-            if i < len(backup_markers) - 1:
-                start_marker = backup_markers[i]
-                end_marker = backup_markers[i + 1]
-                start_pos = response.find(start_marker)
-                if start_pos != -1:
-                    start_pos += len(start_marker)
-                    end_pos = response.find(end_marker, start_pos)
-                    if end_pos != -1:
-                        commit_options.append(response[start_pos:end_pos].strip())
+        for i in range(len(option_positions)):
+            current_pos = option_positions[i]
+            # 如果是最后一个选项
+            if i == len(option_positions) - 1:
+                content = response[current_pos[2]:].strip()
             else:
-                start_marker = backup_markers[i]
-                start_pos = response.find(start_marker)
-                if start_pos != -1:
-                    start_pos += len(start_marker)
-                    commit_options.append(response[start_pos:].strip())
+                next_pos = option_positions[i+1]
+                content = response[current_pos[2]:next_pos[1]].strip()
+            
+            commit_options.append(content)
+            debug_log(f"解析选项 {current_pos[0]}: {content[:50]}...")
+        
+        if len(commit_options) == num_options:
+            return commit_options
     
-    # 如果仍然未找到足够的选项，尝试简单分割
-    if len(commit_options) < num_options:
-        debug_log("使用标记方法未找到足够的选项，尝试简单分割")
-        # 如果LLM没有明确使用标记，尝试简单分割
-        lines = response.split('\n\n\n')
-        if len(lines) >= num_options:
-            commit_options = [line.strip() for line in lines[:num_options]]
+    # 尝试使用三个连续换行符分割
+    if not option_positions:
+        debug_log("未找到选项标记，尝试用三个换行符分割")
+        parts = response.split('\n\n\n')
+        if len(parts) >= num_options:
+            return [part.strip() for part in parts[:num_options]]
     
-    # 如果仍然找不到多个选项，将整个响应作为一个选项
-    if not commit_options:
+    # 如果没有找到足够的选项，尝试直接解析响应中的选项标记
+    if language.lower() == "chinese" or language.lower() == "中文":
+        commit_parts = response.split("选项")
+    else:
+        commit_parts = response.split("Option")
+    
+    if len(commit_parts) > 1:  # 第一部分可能是介绍文本
+        debug_log(f"使用简单分割，找到 {len(commit_parts)-1} 个部分")
+        commit_options = []
+        for part in commit_parts[1:]:  # 跳过第一部分
+            if part.strip():
+                # 移除选项编号
+                cleaned_part = re.sub(r"^\d+\s*[:：]", "", part).strip()
+                commit_options.append(cleaned_part)
+                if len(commit_options) >= num_options:
+                    break
+    else:
         debug_log("无法解析多个选项，将整个响应作为一个选项")
         commit_options = [response]
     
@@ -449,7 +461,8 @@ def select_commit_message(commit_options):
     
     while True:
         try:
-            print_color("\n请输入选项编号 (1-{}): ".format(len(commit_options)), Colors.GREEN, end="")
+            # 使用print而不是print_color来避免end参数问题
+            print(f"{Colors.GREEN}请输入选项编号 (1-{len(commit_options)}): {Colors.NC}", end="")
             choice = int(input())
             if 1 <= choice <= len(commit_options):
                 debug_log(f"用户选择了选项 {choice}")
