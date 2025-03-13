@@ -262,25 +262,40 @@ def process_submodules():
     debug_log("submodule处理完成，汇总信息:", submodule_summary)
     return submodule_summary
 
-def generate_commit_message(changes, repo_info, submodule_info, model="mistral-nemo"):
+def generate_commit_message(changes, repo_info, submodule_info, model="mistral-nemo", language="english"):
     """使用LLM生成commit信息"""
-    print_color(f"正在使用 {model} 生成提交信息...", Colors.BLUE)
-    debug_log(f"开始使用LLM({model})生成提交信息")
+    print_color(f"正在使用 {model} 生成提交信息 (语言: {language})...", Colors.BLUE)
+    debug_log(f"开始使用LLM({model})生成提交信息，语言: {language}")
     
-    # 构建提示
-    prompt = "请基于以下Git变更生成一个专业的、遵循最佳实践的commit message。\n\n"
-    prompt += f"仓库信息:\n{repo_info}\n\n"
-    prompt += f"变更内容:\n{changes}\n\n"
-    
-    if submodule_info:
-        prompt += f"Submodule变更:\n{submodule_info}\n\n"
-    
-    prompt += "生成的commit message应该:\n"
-    prompt += "1. 使用现在时态\n"
-    prompt += "2. 第一行是简短的摘要 (50个字符以内)\n"
-    prompt += "3. 留一个空行后再写详细描述\n"
-    prompt += "4. 详细描述应当解释为什么进行更改，而不是如何更改\n"
-    prompt += "5. 引用任何相关问题或工单编号"
+    # 构建提示，根据语言选择提示文本
+    if language.lower() == "chinese" or language.lower() == "中文":
+        prompt = "请基于以下Git变更生成一个专业的、遵循最佳实践的commit message，使用中文。\n\n"
+        prompt += f"仓库信息:\n{repo_info}\n\n"
+        prompt += f"变更内容:\n{changes}\n\n"
+        
+        if submodule_info:
+            prompt += f"Submodule变更:\n{submodule_info}\n\n"
+        
+        prompt += "生成的commit message应该:\n"
+        prompt += "1. 使用现在时态\n"
+        prompt += "2. 第一行是简短的摘要 (50个字符以内)\n"
+        prompt += "3. 留一个空行后再写详细描述\n"
+        prompt += "4. 详细描述应当解释为什么进行更改，而不是如何更改\n"
+        prompt += "5. 引用任何相关问题或工单编号"
+    else:  # 默认英文
+        prompt = "Based on the following Git changes, generate a professional, best-practice commit message in English.\n\n"
+        prompt += f"Repository Info:\n{repo_info}\n\n"
+        prompt += f"Changes:\n{changes}\n\n"
+        
+        if submodule_info:
+            prompt += f"Submodule Changes:\n{submodule_info}\n\n"
+        
+        prompt += "The commit message should:\n"
+        prompt += "1. Use present tense\n"
+        prompt += "2. Have a short summary line (max 50 characters)\n"
+        prompt += "3. Leave a blank line after the summary\n"
+        prompt += "4. Explain why the change was made, not how\n"
+        prompt += "5. Reference any related issues or tickets"
     
     debug_log("构建完成的LLM提示:", prompt)
     
@@ -385,6 +400,9 @@ def main():
     parser.add_argument("-d", "--debug", action="store_true", help="启用调试模式，显示详细过程")
     parser.add_argument("-v", "--view", action="store_true", help="查看最近一次执行的过程")
     parser.add_argument("--clear-log", action="store_true", help="清空日志文件")
+    parser.add_argument("-l", "--language", default="english", 
+                        choices=["english", "chinese", "英文", "中文"], 
+                        help="指定commit message的语言 (默认: english)")
     
     args = parser.parse_args()
     
@@ -421,6 +439,15 @@ def main():
     if not check_git_repo():
         return
     
+    # 处理语言标识转换
+    language = args.language
+    if language == "英文":
+        language = "english"
+    elif language == "中文":
+        language = "chinese"
+    
+    debug_log(f"选择的commit message语言: {language}")
+    
     # 检查是否有变更
     staged_changes = run_git_command(["git", "diff", "--staged"], check=False)
     unstaged_changes = run_git_command(["git", "diff"], check=False)
@@ -429,7 +456,7 @@ def main():
     debug_log("检查仓库状态:", {
         "有已暂存更改": bool(staged_changes),
         "有未暂存更改": bool(unstaged_changes),
-        "可能有子模块更改": "modified:" in submodule_changes and "orm_hub" in submodule_changes
+        "可能有子模块更改": "modified:" in submodule_changes
     })
     
     # 如果使用-a参数并且有未暂存的更改，则先将所有更改暂存
@@ -442,10 +469,9 @@ def main():
     # 如果没有任何暂存的更改，提示用户
     if not staged_changes:
         # 检查是否有未暂存的子模块更改
-        if "modified:" in submodule_changes and "orm_hub" in submodule_changes:
+        if "modified:" in submodule_changes:
             print_color("检测到子模块更改但尚未暂存。", Colors.YELLOW)
             print_color("提示: 请使用 'git add <子模块路径>' 添加子模块更改。", Colors.YELLOW)
-            print_color("例如: git add orm_hub", Colors.YELLOW)
             debug_log("检测到未暂存的子模块更改", level="WARNING")
         # 检查是否有未暂存的普通更改
         elif unstaged_changes:
@@ -481,7 +507,7 @@ def main():
     submodule_info = process_submodules()
     
     # 生成提交信息
-    commit_message = generate_commit_message(changes, repo_info, submodule_info, args.model)
+    commit_message = generate_commit_message(changes, repo_info, submodule_info, args.model, language)
     
     # 如果需要提交
     if args.commit:
