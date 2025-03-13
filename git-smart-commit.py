@@ -516,6 +516,179 @@ def clear_log():
     else:
         print_color("日志文件不存在", Colors.YELLOW)
 
+def handle_interactive_mode(commit_options, model, language, changes, repo_info, submodule_info, initial_message=None):
+    """处理交互式对话模式，允许用户通过自然语言调整提交信息"""
+    # 使用传入的初始消息，或者让用户选择
+    selected_message = initial_message if initial_message else select_commit_message(commit_options)
+    
+    print_color("\n--- 交互模式 ---", Colors.BLUE)
+    print_color("您可以通过自然语言对提交信息进行调整，例如：", Colors.BLUE)
+    print("1. 合并选项1和选项2")
+    print("2. 修改第一行，改为'修复xxx问题'")
+    print("3. 添加更多关于xxx的细节")
+    print("4. 使用这个提交信息")
+    print("5. 退出")
+    
+    while True:
+        print_color("\n请输入您的指令: ", Colors.GREEN, end="")
+        user_input = input().strip()
+        
+        # 检查是否要使用当前信息或退出
+        if user_input.lower() in ["使用这个提交信息", "使用", "4", "use this", "accept"]:
+            debug_log("用户接受当前提交信息")
+            return selected_message
+        
+        if user_input.lower() in ["退出", "5", "exit", "quit", "q"]:
+            debug_log("用户退出交互模式")
+            return None
+        
+        # 处理合并选项的特殊情况
+        if "合并选项" in user_input or "combine option" in user_input.lower() or "merge option" in user_input.lower():
+            selected_message = handle_merge_options(user_input, commit_options, model, language)
+            print_color("\n修改后的提交信息:", Colors.GREEN)
+            print(selected_message)
+            continue
+        
+        # 其他自然语言指令处理
+        debug_log(f"用户输入自然语言指令: {user_input}")
+        print_color("\n正在处理您的请求...", Colors.BLUE)
+        
+        # 构建提示
+        prompt = build_interactive_prompt(user_input, selected_message, language, commit_options)
+        
+        # 调用LLM处理请求
+        try:
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            
+            debug_log(f"发送交互提示到LLM({model})")
+            debug_log("交互提示内容:", prompt)
+            
+            result = subprocess.run(
+                ["ollama", "run", model],
+                input=prompt,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                env=env,
+                check=True
+            )
+            
+            response = result.stdout.strip() if result.stdout else ""
+            debug_log("LLM交互响应:", response)
+            
+            # 更新选中的消息
+            selected_message = response
+            
+            print_color("\n修改后的提交信息:", Colors.GREEN)
+            print(selected_message)
+            
+        except Exception as e:
+            print_color(f"处理请求时发生错误: {e}", Colors.RED)
+            debug_log("处理交互请求时发生错误", str(e), "ERROR")
+
+def build_interactive_prompt(user_input, current_message, language, all_options=None):
+    """构建用于交互式对话的提示"""
+    if language.lower() == "chinese" or language.lower() == "中文":
+        prompt = "作为Git提交信息生成助手，请根据用户的指令修改当前的提交信息。\n\n"
+        prompt += f"当前的提交信息是:\n```\n{current_message}\n```\n\n"
+        
+        if all_options:
+            prompt += "所有可用的选项有:\n"
+            for i, option in enumerate(all_options, 1):
+                prompt += f"--- 选项 {i} ---\n{option}\n\n"
+        
+        prompt += f"用户的指令是: {user_input}\n\n"
+        prompt += "请直接返回修改后的完整提交信息，不要包含任何解释或其他内容。"
+        prompt += "确保提交信息格式符合Git最佳实践：第一行是简短摘要，然后空一行，再写详细描述。"
+        
+    else:  # 英文
+        prompt = "As a Git commit message assistant, please modify the current commit message according to the user's instructions.\n\n"
+        prompt += f"The current commit message is:\n```\n{current_message}\n```\n\n"
+        
+        if all_options:
+            prompt += "All available options are:\n"
+            for i, option in enumerate(all_options, 1):
+                prompt += f"--- Option {i} ---\n{option}\n\n"
+        
+        prompt += f"The user's instruction is: {user_input}\n\n"
+        prompt += "Please return only the modified commit message, without any explanations or additional content."
+        prompt += "Ensure the commit message follows Git best practices: a short summary on the first line, then a blank line, followed by a detailed description."
+    
+    return prompt
+
+def handle_merge_options(user_input, commit_options, model, language):
+    """处理合并选项的请求"""
+    debug_log(f"处理合并选项请求: {user_input}")
+    
+    # 解析要合并的选项编号
+    option_numbers = []
+    
+    # 从用户输入中提取数字
+    numbers = re.findall(r'\d+', user_input)
+    if numbers:
+        option_numbers = [int(num) for num in numbers if 1 <= int(num) <= len(commit_options)]
+    
+    if not option_numbers or len(option_numbers) < 2:
+        print_color("未能识别要合并的选项编号，请指定至少两个有效的选项编号", Colors.YELLOW)
+        return commit_options[0]  # 默认返回第一个选项
+    
+    debug_log(f"要合并的选项编号: {option_numbers}")
+    
+    # 构建合并提示
+    if language.lower() == "chinese" or language.lower() == "中文":
+        prompt = "请将以下多个Git提交信息选项合并为一个更好的提交信息。合并时保留各选项的优点和重要信息。\n\n"
+    else:
+        prompt = "Please merge the following Git commit message options into a single, better commit message. Preserve the strengths and important information from each option.\n\n"
+    
+    for i, num in enumerate(option_numbers):
+        option_index = num - 1
+        if language.lower() == "chinese" or language.lower() == "中文":
+            prompt += f"选项 {num}:\n```\n{commit_options[option_index]}\n```\n\n"
+        else:
+            prompt += f"Option {num}:\n```\n{commit_options[option_index]}\n```\n\n"
+    
+    if language.lower() == "chinese" or language.lower() == "中文":
+        prompt += "请直接返回合并后的完整提交信息，不要包含任何解释或其他内容。"
+    else:
+        prompt += "Please return only the merged commit message, without any explanations or additional content."
+    
+    # 调用LLM处理合并请求
+    try:
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        
+        debug_log("发送合并选项提示到LLM")
+        debug_log("合并提示内容:", prompt)
+        
+        result = subprocess.run(
+            ["ollama", "run", model],
+            input=prompt,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            env=env,
+            check=True
+        )
+        
+        response = result.stdout.strip() if result.stdout else ""
+        debug_log("LLM合并响应:", response)
+        
+        if not response:
+            print_color("合并选项失败，返回为空", Colors.RED)
+            return commit_options[0]  # 默认返回第一个选项
+        
+        return response
+        
+    except Exception as e:
+        print_color(f"合并选项时发生错误: {e}", Colors.RED)
+        debug_log("合并选项时发生错误", str(e), "ERROR")
+        return commit_options[0]  # 默认返回第一个选项
+
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(description="Git智能提交信息生成器")
@@ -531,6 +704,7 @@ def main():
                         help="指定commit message的语言 (默认: english)")
     parser.add_argument("-n", "--num-options", type=int, default=1,
                         help="生成的提交信息选项数量 (默认: 1)")
+    parser.add_argument("-i", "--interactive", action="store_true", help="启用交互模式，允许通过自然语言调整提交信息")
     
     args = parser.parse_args()
     
@@ -652,17 +826,32 @@ def main():
         args.num_options
     )
     
-    # 如果只有一个选项，直接显示
-    if args.num_options == 1 or isinstance(commit_options, str):
-        if isinstance(commit_options, str):
-            selected_message = commit_options
-        else:
-            selected_message = commit_options[0]
+    # 首先让用户选择一个基础选项
+    if isinstance(commit_options, str):
+        selected_message = commit_options
         print_color("生成的提交信息:", Colors.GREEN)
         print(selected_message)
     else:
-        # 让用户选择喜欢的commit message
+        print_color("\n请选择一个基础提交信息选项:", Colors.BLUE)
         selected_message = select_commit_message(commit_options)
+    
+    # 然后如果启用了交互模式，进入交互阶段
+    if args.interactive:
+        print_color("\n已选择基础提交信息，现在进入交互模式...", Colors.BLUE)
+        interactive_result = handle_interactive_mode(
+            commit_options, 
+            args.model, 
+            language, 
+            changes, 
+            repo_info, 
+            submodule_info,
+            selected_message  # 传递已选择的消息作为初始值
+        )
+        
+        if interactive_result:
+            selected_message = interactive_result
+        else:
+            return  # 用户退出
     
     # 如果需要提交
     if args.commit:
