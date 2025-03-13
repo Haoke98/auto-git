@@ -607,12 +607,27 @@ def interactive_session(commit_options, model, language, changes, repo_info, sub
     # 选中的消息，初始为None
     selected_message = None
     
+    # 记录当前可用的选项（可能会被更新）
+    current_options = commit_options if isinstance(commit_options, list) else [commit_options]
+    
+    # 记录是否有用户通过交互生成的最新消息
+    has_interactive_result = False
+    latest_interactive_result = None
+    
     # 交互循环
     while True:
         # 显示交互菜单
         print_color("\n请选择以下交互选项：", Colors.BLUE)
         
-        if isinstance(commit_options, str):
+        if has_interactive_result:
+            # 如果已有交互结果，显示不同的菜单
+            print("1. 使用当前的提交信息")
+            print("2. 继续自然语言交互")
+            print("3. 返回原始选项")
+            print("4. 退出")
+            
+            valid_choices = ["1", "2", "3", "4"]
+        elif isinstance(current_options, str) or len(current_options) == 1:
             # 单选项菜单
             print("1. 使用这个提交信息")
             print("2. 自然语言交互")
@@ -636,80 +651,80 @@ def interactive_session(commit_options, model, language, changes, repo_info, sub
                 print_color("无效的选择，请重新输入", Colors.RED)
         
         # 处理用户选择
-        if choice == "3":  # 退出
+        if has_interactive_result and choice == "1":  # 使用当前的提交信息
+            debug_log("用户选择使用当前交互生成的提交信息")
+            selected_message = latest_interactive_result
+            break
+            
+        elif has_interactive_result and choice == "3":  # 返回原始选项
+            debug_log("用户选择返回原始选项")
+            has_interactive_result = False
+            latest_interactive_result = None
+            # 回显原始选项
+            print_color("\n" + assistant_msg, Colors.GREEN)
+            continue
+            
+        elif has_interactive_result and choice == "4":  # 退出
             debug_log("用户选择退出交互")
             return None
-        
-        elif choice == "1":  # 直接选择
-            if isinstance(commit_options, str):
+            
+        elif choice == "3" and not has_interactive_result:  # 退出
+            debug_log("用户选择退出交互")
+            return None
+            
+        elif choice == "1" and not has_interactive_result:  # 直接选择
+            if isinstance(current_options, str) or len(current_options) == 1:
                 # 单个选项直接使用
-                selected_message = commit_options
-                debug_log("用户选择使用推荐的提交信息")
-                return selected_message
+                selected_message = current_options if isinstance(current_options, str) else current_options[0]
+                debug_log("用户选择使用唯一的提交信息选项")
+                break
             else:
                 # 多个选项让用户选择
-                print_color("\n请输入要选择的选项编号 (1-{}): ".format(len(commit_options)), Colors.GREEN, end="")
+                print_color("\n请输入要选择的选项编号 (1-{}): ".format(len(current_options)), Colors.GREEN, end="")
                 try:
-                    option_choice = int(input().strip())
-                    if 1 <= option_choice <= len(commit_options):
-                        selected_message = commit_options[option_choice - 1]
-                        debug_log(f"用户选择了选项 {option_choice}")
-                        return selected_message
+                    option_index = int(input().strip()) - 1
+                    if 0 <= option_index < len(current_options):
+                        selected_message = current_options[option_index]
+                        debug_log(f"用户选择了选项 {option_index + 1}")
+                        break
                     else:
-                        print_color("无效的选择，请重新选择交互选项", Colors.RED)
+                        print_color("无效的选项编号", Colors.RED)
                 except ValueError:
                     print_color("请输入有效的数字", Colors.RED)
         
         elif choice == "2":  # 自然语言交互
-            # 提示用户输入自然语言指令
-            if language.lower() == "chinese" or language.lower() == "中文":
-                print_color("\n请输入您的自然语言指令 (如'合并选项1和2'、'增加关于性能的说明'等):", Colors.GREEN)
-                print_color("输入'完成'表示接受当前提交信息，输入'退出'结束交互", Colors.YELLOW)
-            else:
-                print_color("\nPlease enter your natural language instruction (e.g., 'merge options 1 and 2', 'add more about performance', etc.):", Colors.GREEN)
-                print_color("Type 'done' to accept the current message, or 'exit' to end the interaction", Colors.YELLOW)
-            
+            print_color("\n请输入您的自然语言指令 (如'合并选项1和2'、'增加关于性能的说明'等):", Colors.GREEN)
+            print_color("输入'完成'表示接受当前提交信息，输入'退出'结束交互", Colors.YELLOW)
             user_input = input().strip()
             
-            # 检查是否要结束对话
-            if user_input.lower() in ["完成", "done", "accept", "使用", "使用这个"]:
-                if selected_message:
-                    return selected_message
-                else:
-                    # 如果之前没有选择，使用最后一次AI生成的内容
-                    for msg in reversed(history.get_messages()):
-                        if msg["role"] == "assistant" and not msg["content"].startswith(("根据您的代码变更", "Based on your code changes")):
-                            return extract_commit_message(msg["content"], language)
-                    
-                    # 如果没有找到生成的内容，使用第一个选项
-                    if isinstance(commit_options, str):
-                        return commit_options
-                    else:
-                        return commit_options[0]
-            
-            if user_input.lower() in ["退出", "exit", "quit", "q"]:
-                debug_log("用户选择退出交互")
-                return None
-            
-            # 将用户输入添加到历史记录
+            # 添加用户输入到历史
             history.add_user(user_input)
             debug_log("用户输入:", user_input)
             
-            # 构建提示
-            prompt = build_conversation_prompt(history, language)
+            # 检查是否要结束对话
+            if user_input.lower() in ["完成", "done", "accept", "使用", "使用这个"]:
+                if latest_interactive_result:
+                    selected_message = latest_interactive_result
+                    debug_log("用户选择使用当前交互生成的提交信息")
+                    break
+                else:
+                    print_color("尚未生成提交信息，请先进行交互", Colors.YELLOW)
+                    continue
             
+            if user_input.lower() in ["退出", "exit", "cancel", "quit", "q"]:
+                debug_log("用户选择退出交互")
+                return None
+            
+            # 处理用户请求
             print_color("\n正在处理您的请求...", Colors.BLUE)
             
-            # 调用LLM处理会话
+            # 构建对话提示
+            prompt = build_conversation_prompt(history, language)
+            debug_log("发送对话提示到LLM", prompt)
+            
             try:
                 env = os.environ.copy()
                 env["PYTHONIOENCODING"] = "utf-8"
-                
-                debug_log("发送对话提示到LLM")
-                debug_log("对话提示内容:", prompt)
-                
-                # 添加进度提示
-                spinner_thread = start_spinner()
                 
                 result = subprocess.run(
                     ["ollama", "run", model],
@@ -723,56 +738,56 @@ def interactive_session(commit_options, model, language, changes, repo_info, sub
                     check=True
                 )
                 
-                # 停止进度提示
-                stop_spinner(spinner_thread)
-                
                 response = result.stdout.strip() if result.stdout else ""
                 debug_log("LLM对话响应:", response)
                 
-                if not response:
-                    print_color("处理请求失败，LLM返回为空", Colors.RED)
-                    continue
+                # 提取提交信息
+                commit_message = extract_commit_message(response)
+                if not commit_message:
+                    commit_message = response
                 
-                # 将LLM的回复添加到历史记录
-                history.add_assistant(response)
+                # 更新历史和状态
+                history.add_assistant(commit_message)
+                latest_interactive_result = commit_message
+                has_interactive_result = True
                 
-                # 更新选中的消息
-                selected_message = extract_commit_message(response, language)
-                
-                # 显示LLM的回复
-                print_color("\nAI助手:", Colors.GREEN)
-                print(response)
+                # 显示结果
+                print_color("AI助手:", Colors.GREEN)
+                print(commit_message)
                 
             except Exception as e:
                 print_color(f"处理请求时发生错误: {e}", Colors.RED)
-                debug_log("处理对话请求时发生错误", str(e), "ERROR")
-
-def extract_commit_message(response: str, language: str) -> str:
-    """从LLM回复中提取commit message内容"""
-    # 尝试从可能的格式化回复中提取实际的提交信息
+                debug_log("处理对话请求时发生错误:", str(e), "ERROR")
     
-    # 检查是否包含markdown代码块
-    code_block_pattern = r"```(?:.*?\n)?(.*?)```"
-    code_blocks = re.findall(code_block_pattern, response, re.DOTALL)
+    return selected_message
+
+def extract_commit_message(response):
+    """从LLM响应中提取提交信息"""
+    # 尝试提取代码块
+    code_pattern = r"```(?:markdown|md)?(.*?)```"
+    code_blocks = re.findall(code_pattern, response, re.DOTALL)
     
     if code_blocks:
-        # 返回第一个代码块的内容
-        return code_blocks[0].strip()
+        # 返回第一个非空代码块
+        for block in code_blocks:
+            if block.strip():
+                return block.strip()
     
-    # 检查是否包含"提交信息："或"Commit message:"之类的标记
-    if language.lower() == "chinese" or language.lower() == "中文":
-        markers = ["提交信息：", "提交信息:", "最终提交信息：", "最终提交信息:"]
-    else:
-        markers = ["Commit message:", "Final commit message:", "Here's the commit message:"]
+    # 尝试查找常见的提交信息标记
+    message_patterns = [
+        r"提交信息:(.*?)(?=$|\n\n)",
+        r"commit message:(.*?)(?=$|\n\n)",
+        r"最终提交信息:(.*?)(?=$|\n\n)",
+        r"final commit message:(.*?)(?=$|\n\n)"
+    ]
     
-    for marker in markers:
-        if marker in response:
-            parts = response.split(marker, 1)
-            if len(parts) > 1:
-                return parts[1].strip()
+    for pattern in message_patterns:
+        matches = re.search(pattern, response, re.IGNORECASE | re.DOTALL)
+        if matches:
+            return matches.group(1).strip()
     
-    # 如果没有找到明确的格式，返回整个响应作为提交信息
-    return response.strip()
+    # 如果没有找到明确的标记，返回None让调用者处理
+    return None
 
 def format_options(options, language):
     """格式化多个选项以便显示"""
