@@ -262,14 +262,14 @@ def process_submodules():
     debug_log("submodule处理完成，汇总信息:", submodule_summary)
     return submodule_summary
 
-def generate_commit_message(changes, repo_info, submodule_info, model="mistral-nemo", language="english"):
+def generate_commit_message(changes, repo_info, submodule_info, model="mistral-nemo", language="english", num_options=1):
     """使用LLM生成commit信息"""
-    print_color(f"正在使用 {model} 生成提交信息 (语言: {language})...", Colors.BLUE)
-    debug_log(f"开始使用LLM({model})生成提交信息，语言: {language}")
+    print_color(f"正在使用 {model} 生成 {num_options} 个提交信息选项 (语言: {language})...", Colors.BLUE)
+    debug_log(f"开始使用LLM({model})生成提交信息，语言: {language}，选项数量: {num_options}")
     
     # 构建提示，根据语言选择提示文本
     if language.lower() == "chinese" or language.lower() == "中文":
-        prompt = "请基于以下Git变更生成一个专业的、遵循最佳实践的commit message，使用中文。\n\n"
+        prompt = f"请基于以下Git变更生成 {num_options} 个专业的、遵循最佳实践的commit message，使用中文。\n\n"
         prompt += f"仓库信息:\n{repo_info}\n\n"
         prompt += f"变更内容:\n{changes}\n\n"
         
@@ -281,21 +281,27 @@ def generate_commit_message(changes, repo_info, submodule_info, model="mistral-n
         prompt += "2. 第一行是简短的摘要 (50个字符以内)\n"
         prompt += "3. 留一个空行后再写详细描述\n"
         prompt += "4. 详细描述应当解释为什么进行更改，而不是如何更改\n"
-        prompt += "5. 引用任何相关问题或工单编号"
+        prompt += "5. 引用任何相关问题或工单编号\n\n"
+        
+        if num_options > 1:
+            prompt += f"请生成 {num_options} 个不同的选项，并使用'选项1:'、'选项2:'等标记每个选项。"
     else:  # 默认英文
-        prompt = "Based on the following Git changes, generate a professional, best-practice commit message in English.\n\n"
+        prompt = f"Based on the following Git changes, generate {num_options} professional, best-practice commit messages in English.\n\n"
         prompt += f"Repository Info:\n{repo_info}\n\n"
         prompt += f"Changes:\n{changes}\n\n"
         
         if submodule_info:
             prompt += f"Submodule Changes:\n{submodule_info}\n\n"
         
-        prompt += "The commit message should:\n"
+        prompt += "The commit messages should:\n"
         prompt += "1. Use present tense\n"
         prompt += "2. Have a short summary line (max 50 characters)\n"
         prompt += "3. Leave a blank line after the summary\n"
         prompt += "4. Explain why the change was made, not how\n"
-        prompt += "5. Reference any related issues or tickets"
+        prompt += "5. Reference any related issues or tickets\n\n"
+        
+        if num_options > 1:
+            prompt += f"Please generate {num_options} different options and mark each option with 'Option 1:', 'Option 2:', etc."
     
     debug_log("构建完成的LLM提示:", prompt)
     
@@ -327,24 +333,131 @@ def generate_commit_message(changes, repo_info, submodule_info, model="mistral-n
         ollama_response = result.stdout.strip() if result.stdout else "LLM没有返回任何输出"
         
         debug_log("LLM响应:", ollama_response)
+        
+        # 如果需要多个选项，解析响应
+        if num_options > 1:
+            commit_options = parse_multiple_commits(ollama_response, num_options, language)
+            debug_log(f"解析出 {len(commit_options)} 个提交信息选项")
+            return commit_options
+        else:
+            return ollama_response
+            
     except subprocess.CalledProcessError as e:
         print_color(f"LLM调用失败: {e}", Colors.RED)
         debug_log("LLM调用失败", str(e), "ERROR")
-        ollama_response = "LLM调用失败"
+        return ["LLM调用失败"] if num_options > 1 else "LLM调用失败"
     except FileNotFoundError:
         print_color("错误: 未找到ollama命令", Colors.RED)
         debug_log("未找到ollama命令", level="ERROR")
-        ollama_response = "LLM调用失败：未找到ollama命令"
+        return ["LLM调用失败：未找到ollama命令"] if num_options > 1 else "LLM调用失败：未找到ollama命令"
     except Exception as e:
         print_color(f"调用LLM时发生异常: {e}", Colors.RED)
         debug_log("调用LLM时发生异常", str(e), "ERROR")
-        ollama_response = f"LLM调用异常: {str(e)}"
+        return [f"LLM调用异常: {str(e)}"] if num_options > 1 else f"LLM调用异常: {str(e)}"
+
+def parse_multiple_commits(response, num_options, language):
+    """解析LLM返回的多个commit message"""
+    debug_log("开始解析多个提交信息选项")
     
-    # 打印生成的commit message
-    print_color("生成的提交信息:", Colors.GREEN)
-    print(ollama_response)
+    # 根据语言设置选项标记
+    if language.lower() == "chinese" or language.lower() == "中文":
+        option_markers = [f"选项{i}:" for i in range(1, num_options + 1)]
+        # 备用标记
+        backup_markers = [f"选项 {i}:" for i in range(1, num_options + 1)]
+    else:
+        option_markers = [f"Option {i}:" for i in range(1, num_options + 1)]
+        # 备用标记
+        backup_markers = [f"OPTION {i}:" for i in range(1, num_options + 1)]
     
-    return ollama_response
+    # 尝试查找所有选项
+    commit_options = []
+    
+    # 首先尝试使用主要标记
+    for i in range(num_options):
+        if i < len(option_markers) - 1:
+            # 寻找两个标记之间的内容
+            start_marker = option_markers[i]
+            end_marker = option_markers[i + 1]
+            start_pos = response.find(start_marker)
+            if start_pos != -1:
+                start_pos += len(start_marker)
+                end_pos = response.find(end_marker, start_pos)
+                if end_pos != -1:
+                    commit_options.append(response[start_pos:end_pos].strip())
+        else:
+            # 最后一个选项到结尾
+            start_marker = option_markers[i]
+            start_pos = response.find(start_marker)
+            if start_pos != -1:
+                start_pos += len(start_marker)
+                commit_options.append(response[start_pos:].strip())
+    
+    # 如果未找到足够的选项，尝试使用备用标记
+    if len(commit_options) < num_options:
+        debug_log("使用主要标记未找到足够的选项，尝试备用标记")
+        commit_options = []
+        for i in range(num_options):
+            if i < len(backup_markers) - 1:
+                start_marker = backup_markers[i]
+                end_marker = backup_markers[i + 1]
+                start_pos = response.find(start_marker)
+                if start_pos != -1:
+                    start_pos += len(start_marker)
+                    end_pos = response.find(end_marker, start_pos)
+                    if end_pos != -1:
+                        commit_options.append(response[start_pos:end_pos].strip())
+            else:
+                start_marker = backup_markers[i]
+                start_pos = response.find(start_marker)
+                if start_pos != -1:
+                    start_pos += len(start_marker)
+                    commit_options.append(response[start_pos:].strip())
+    
+    # 如果仍然未找到足够的选项，尝试简单分割
+    if len(commit_options) < num_options:
+        debug_log("使用标记方法未找到足够的选项，尝试简单分割")
+        # 如果LLM没有明确使用标记，尝试简单分割
+        lines = response.split('\n\n\n')
+        if len(lines) >= num_options:
+            commit_options = [line.strip() for line in lines[:num_options]]
+    
+    # 如果仍然找不到多个选项，将整个响应作为一个选项
+    if not commit_options:
+        debug_log("无法解析多个选项，将整个响应作为一个选项")
+        commit_options = [response]
+    
+    # 填充不足的选项
+    while len(commit_options) < num_options:
+        commit_options.append(f"选项 {len(commit_options)+1} (生成失败)")
+    
+    # 如果解析出的选项超过请求的数量，只保留请求的数量
+    if len(commit_options) > num_options:
+        commit_options = commit_options[:num_options]
+    
+    return commit_options
+
+def select_commit_message(commit_options):
+    """让用户选择喜欢的commit message"""
+    if len(commit_options) == 1:
+        return commit_options[0]
+    
+    print_color("\n请选择您喜欢的提交信息选项:", Colors.BLUE)
+    
+    for i, option in enumerate(commit_options, 1):
+        print_color(f"\n--- 选项 {i} ---", Colors.YELLOW)
+        print(option)
+    
+    while True:
+        try:
+            print_color("\n请输入选项编号 (1-{}): ".format(len(commit_options)), Colors.GREEN, end="")
+            choice = int(input())
+            if 1 <= choice <= len(commit_options):
+                debug_log(f"用户选择了选项 {choice}")
+                return commit_options[choice - 1]
+            else:
+                print_color("无效的选择，请重新输入", Colors.RED)
+        except ValueError:
+            print_color("请输入有效的数字", Colors.RED)
 
 def do_commit(message):
     """执行提交"""
@@ -403,8 +516,18 @@ def main():
     parser.add_argument("-l", "--language", default="english", 
                         choices=["english", "chinese", "英文", "中文"], 
                         help="指定commit message的语言 (默认: english)")
+    parser.add_argument("-n", "--num-options", type=int, default=1,
+                        help="生成的提交信息选项数量 (默认: 1)")
     
     args = parser.parse_args()
+    
+    # 确保选项数量合理
+    if args.num_options < 1:
+        print_color("选项数量必须大于0，设置为默认值1", Colors.YELLOW)
+        args.num_options = 1
+    elif args.num_options > 5:
+        print_color("选项数量过多可能导致质量下降，已限制为最大值5", Colors.YELLOW)
+        args.num_options = 5
     
     # 设置全局调试模式
     global DEBUG
@@ -506,12 +629,31 @@ def main():
     # 处理submodule
     submodule_info = process_submodules()
     
-    # 生成提交信息
-    commit_message = generate_commit_message(changes, repo_info, submodule_info, args.model, language)
+    # 生成提交信息选项
+    commit_options = generate_commit_message(
+        changes, 
+        repo_info, 
+        submodule_info, 
+        args.model, 
+        language, 
+        args.num_options
+    )
+    
+    # 如果只有一个选项，直接显示
+    if args.num_options == 1 or isinstance(commit_options, str):
+        if isinstance(commit_options, str):
+            selected_message = commit_options
+        else:
+            selected_message = commit_options[0]
+        print_color("生成的提交信息:", Colors.GREEN)
+        print(selected_message)
+    else:
+        # 让用户选择喜欢的commit message
+        selected_message = select_commit_message(commit_options)
     
     # 如果需要提交
     if args.commit:
-        do_commit(commit_message)
+        do_commit(selected_message)
     
     if DEBUG:
         print_color("\n调试信息已保存到 git-smart-commit.log 文件", Colors.BLUE)
